@@ -1,0 +1,137 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <thread>
+#include <zlib.h>
+#include <chrono>
+using namespace std;
+using namespace std::chrono;
+
+const int CHUNK_SIZE = 1024 * 1024; // 1 MB
+
+struct Chunk {
+    vector<char> input;
+    vector<char> output;
+};
+
+// Compress a single chunk
+void compressChunk(Chunk& chunk) {
+    uLongf compressedSize = compressBound(chunk.input.size());
+    chunk.output.resize(compressedSize);
+    compress(reinterpret_cast<Bytef*>(&chunk.output[0]), &compressedSize,
+             reinterpret_cast<const Bytef*>(&chunk.input[0]),
+             chunk.input.size());
+    chunk.output.resize(compressedSize); // trim to actual size
+}
+
+// Decompress a single chunk
+void decompressChunk(Chunk& chunk) {
+    uLongf decompressedSize = CHUNK_SIZE;
+    chunk.output.resize(decompressedSize);
+    uncompress(reinterpret_cast<Bytef*>(&chunk.output[0]), &decompressedSize,
+               reinterpret_cast<const Bytef*>(&chunk.input[0]),
+               chunk.input.size());
+    chunk.output.resize(decompressedSize); // trim to actual size
+}
+
+// Read file in chunks
+vector<Chunk> readChunks(const string& filename) {
+    ifstream file(filename, ios::binary);
+    vector<Chunk> chunks;
+
+    while (!file.eof()) {
+        Chunk chunk;
+        chunk.input.resize(CHUNK_SIZE);
+        file.read(&chunk.input[0], CHUNK_SIZE);
+        chunk.input.resize(file.gcount());
+        if (chunk.input.empty()) break;
+        chunks.push_back(move(chunk));
+    }
+
+    return chunks;
+}
+
+// Write compressed chunks to file
+void writeCompressedFile(const string& filename, const vector<Chunk>& chunks) {
+    ofstream file(filename, ios::binary);
+    for (const auto& chunk : chunks) {
+        uint32_t size = chunk.output.size();
+        file.write(reinterpret_cast<const char*>(&size), sizeof(size)); // write size
+        file.write(&chunk.output[0], size); // write data
+    }
+}
+
+// Read compressed file (with size headers)
+vector<Chunk> readCompressedFile(const string& filename) {
+    ifstream file(filename, ios::binary);
+    vector<Chunk> chunks;
+
+    while (!file.eof()) {
+        uint32_t size = 0;
+        file.read(reinterpret_cast<char*>(&size), sizeof(size));
+        if (file.eof()) break;
+
+        Chunk chunk;
+        chunk.input.resize(size);
+        file.read(&chunk.input[0], size);
+        chunks.push_back(move(chunk));
+    }
+
+    return chunks;
+}
+
+// Write decompressed output
+void writeDecompressedFile(const string& filename, const vector<Chunk>& chunks) {
+    ofstream file(filename, ios::binary);
+    for (const auto& chunk : chunks) {
+        file.write(&chunk.output[0], chunk.output.size());
+    }
+}
+
+void compressFile(const string& inputFile, const string& outputFile) {
+    auto chunks = readChunks(inputFile);
+    vector<thread> threads;
+
+    for (auto& chunk : chunks) {
+        threads.emplace_back(compressChunk, ref(chunk));
+    }
+
+    for (auto& t : threads) t.join();
+
+    writeCompressedFile(outputFile, chunks);
+}
+
+void decompressFile(const string& inputFile, const string& outputFile) {
+    auto chunks = readCompressedFile(inputFile);
+    vector<thread> threads;
+
+    for (auto& chunk : chunks) {
+        threads.emplace_back(decompressChunk, ref(chunk));
+    }
+
+    for (auto& t : threads) t.join();
+
+    writeDecompressedFile(outputFile, chunks);
+}
+
+int main() {
+    string inputFile = "largefile.txt";
+    string compressedFile = "compressed.bin";
+    string decompressedFile = "decompressed.txt";
+
+    cout << "🔃 Compressing file using multithreading...\n";
+    auto start = high_resolution_clock::now();
+    compressFile(inputFile, compressedFile);
+    auto end = high_resolution_clock::now();
+    cout << "✅ Compression done in "
+         << duration_cast<milliseconds>(end - start).count() << " ms\n";
+
+    cout << "🔃 Decompressing file using multithreading...\n";
+    start = high_resolution_clock::now();
+    decompressFile(compressedFile, decompressedFile);
+    end = high_resolution_clock::now();
+    cout << "✅ Decompression done in "
+         << duration_cast<milliseconds>(end - start).count() << " ms\n";
+
+    return 0;
+}
